@@ -15,10 +15,12 @@ class GradientReverseFunction(Function):
     def forward(ctx: Any, input: torch.Tensor, coeff: Optional[float] = 1.) -> torch.Tensor:
         ctx.coeff = coeff
         output = input * 1.0
+        # print("forward")
         return output
 
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, Any]:
+        # print("backward")
         return grad_output.neg() * ctx.coeff, None
 
 
