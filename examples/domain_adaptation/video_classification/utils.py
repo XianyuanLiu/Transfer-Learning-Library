@@ -180,6 +180,7 @@ def validate(val_loader, model, args, device) -> float:
         end = time.time()
         for i, (images, target) in enumerate(val_loader):
             images = images.to(device)
+            target = target[0]
             target = target.to(device)
 
             # compute output
