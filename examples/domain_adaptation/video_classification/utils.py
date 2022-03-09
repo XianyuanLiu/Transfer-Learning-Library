@@ -728,15 +728,19 @@ class EPIC100DatasetAccess(VideoDatasetAccess):
 
 
 class LinearNet(nn.Module):
-    def __init__(self, in_feature=1024, hidden_size=512, out_feature=1024):
+    def __init__(self, in_feature=1024, hidden_size=256, out_feature=1024):
         super(LinearNet, self).__init__()
         self._out_feature = out_feature
         self.net = nn.Sequential(
-            # nn.Linear(in_feature, hidden_size),
+            nn.Linear(in_feature, hidden_size),
             # nn.BatchNorm1d(hidden_size),
-            # nn.ReLU(),
-            # nn.Linear(hidden_size, out_feature),
-            nn.Linear(in_feature, out_feature),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_size, hidden_size),
+            # nn.BatchNorm1d(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_size, out_feature),
         )
 
     def forward(self, x):
