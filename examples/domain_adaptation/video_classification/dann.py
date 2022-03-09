@@ -17,12 +17,13 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+from comet_ml import Experiment
 
 sys.path.append('../../..')
 from dalib.modules.domain_discriminator import DomainDiscriminator
 from dalib.adaptation.dann import DomainAdversarialLoss, ImageClassifier
 from common.utils.data import ForeverDataIterator
-from common.utils.metric import accuracy
+from common.utils.metric import accuracy, ConfusionMatrix
 from common.utils.meter import AverageMeter, ProgressMeter
 from common.utils.logger import CompleteLogger
 from common.utils.analysis import collect_feature, tsne, a_distance
@@ -39,14 +40,61 @@ def main(args: argparse.Namespace):
     cfg = get_cfg_defaults()
     cfg.merge_from_file(args.cfg)
     cfg.freeze()
-    # print(cfg)
+    print(cfg)
 
-    logger = CompleteLogger(args.log, args.phase)
-    print(args)
+    suffix = str(int(time.time() * 1000))[6:]
 
-    if args.seed is not None:
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
+    # ---- setup logger ----
+    logger = CompleteLogger(cfg.SOLVER.LOG_DIR, cfg.SOLVER.PHASE)
+    experiment = None
+    if cfg.COMET.ENABLE:
+        experiment = Experiment(
+            api_key=cfg.COMET.API_KEY,
+            project_name=cfg.COMET.PROJECT_NAME,
+            workspace="xianyuanliu",
+            auto_output_logging="simple",
+            log_graph=True,
+            log_code=False,
+            log_git_metadata=False,
+            log_git_patch=False,
+            auto_param_logging=False,
+            auto_metric_logging=False,
+        )
+        hyper_params = {
+            "source": cfg.DATASET.SOURCE,
+            "source_trainlist": cfg.DATASET.SRC_TRAINLIST,
+            "source_testlist": cfg.DATASET.SRC_TESTLIST,
+            "target": cfg.DATASET.TARGET,
+            "target_trainlist": cfg.DATASET.TGT_TRAINLIST,
+            "target_testlist": cfg.DATASET.TGT_TESTLIST,
+            "image_modality": cfg.DATASET.IMAGE_MODALITY,
+            "input_type": cfg.DATASET.INPUT_TYPE,
+            "class_type": cfg.DATASET.CLASS_TYPE,
+            "num_segments": cfg.DATASET.NUM_SEGMENTS,
+            "frames_per_segment": cfg.DATASET.FRAMES_PER_SEGMENT,
+            "batch_size": cfg.SOLVER.BATCH_SIZE,
+            "lr": cfg.SOLVER.LR,
+            "lr_gamma": cfg.SOLVER.LR_GAMMA,
+            "lr_decay": cfg.SOLVER.LR_DECAY,
+            "momentum": cfg.SOLVER.MOMENTUM,
+            "weight_decay": cfg.SOLVER.WEIGHT_DECAY,
+            "num_epochs": cfg.SOLVER.NUM_EPOCHS,
+            "seed": cfg.SOLVER.SEED,
+            "log_dir": cfg.SOLVER.LOG_DIR,
+            "phase": cfg.SOLVER.PHASE,
+            "bottleneck_dim": cfg.MODEL.BOTTLENECK_DIM,
+            "no_pool": cfg.MODEL.NO_POOL,
+            "scratch": cfg.MODEL.SCRATCH,
+            "trade_off": cfg.MODEL.TRADE_OFF,
+        }
+        experiment.log_parameters(hyper_params)
+        experiment.set_name(f"{args.task}_{suffix}")
+
+    # print(args)
+
+    if cfg.SOLVER.SEED is not None:
+        random.seed(cfg.SOLVER.SEED)
+        torch.manual_seed(cfg.SOLVER.SEED)
         cudnn.deterministic = True
         warnings.warn('You have chosen to seed training. '
                       'This will turn on the CUDNN deterministic setting, '
@@ -57,57 +105,49 @@ def main(args: argparse.Namespace):
     cudnn.benchmark = True
 
     # Data loading code
-    # train_transform = utils.get_train_transform(args.train_resizing, random_horizontal_flip=not args.no_hflip,
-    #                                             random_color_jitter=False, resize_size=args.resize_size,
-    #                                             norm_mean=args.norm_mean, norm_std=args.norm_std)
-    # val_transform = utils.get_val_transform(args.val_resizing, resize_size=args.resize_size,
-    #                                         norm_mean=args.norm_mean, norm_std=args.norm_std)
-    # print("train_transform: ", train_transform)
-    # print("val_transform: ", val_transform)
-
-    # train_source_dataset, train_target_dataset, val_dataset, test_dataset, num_classes, args.class_names = \
-    #     utils.get_dataset(args.data, args.root, args.source, args.target, train_transform, val_transform)
-    train_source_dataset, train_target_dataset, val_dataset, test_dataset, num_classes, args.class_names = \
+    train_source_dataset, train_target_dataset, val_dataset, test_dataset, num_classes, class_names = \
         utils.VideoDataset.get_source_target(
             utils.VideoDataset(cfg.DATASET.SOURCE.upper()),
             utils.VideoDataset(cfg.DATASET.TARGET.upper()),
             seed=None,
             params=cfg
         )
-    train_source_loader = DataLoader(train_source_dataset, batch_size=args.batch_size,
-                                     shuffle=True, num_workers=args.workers, drop_last=True)
-    train_target_loader = DataLoader(train_target_dataset, batch_size=args.batch_size,
-                                     shuffle=True, num_workers=args.workers, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    train_source_loader = DataLoader(train_source_dataset, batch_size=cfg.SOLVER.BATCH_SIZE,
+                                     shuffle=True, num_workers=cfg.SOLVER.WORKERS, drop_last=True)
+    train_target_loader = DataLoader(train_target_dataset, batch_size=cfg.SOLVER.BATCH_SIZE,
+                                     shuffle=True, num_workers=cfg.SOLVER.WORKERS, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=cfg.SOLVER.BATCH_SIZE, 
+                            shuffle=False, num_workers=cfg.SOLVER.WORKERS)
+    test_loader = DataLoader(test_dataset, batch_size=cfg.SOLVER.BATCH_SIZE, 
+                             shuffle=False, num_workers=cfg.SOLVER.WORKERS)
 
     train_source_iter = ForeverDataIterator(train_source_loader)
     train_target_iter = ForeverDataIterator(train_target_loader)
 
     # create model
-    print("=> using model '{}'".format(args.arch))
-    # backbone = utils.get_model(args.arch, pretrain=not args.scratch)
+    print("=> using model '{}'".format(cfg.MODEL.ARCH))
+    # backbone = utils.get_model(cfg.MODEL.ARCH, pretrain=not cfg.MODEL.SCRATCH)
     backbone = utils.LinearNet(in_feature=1024, out_feature=1024)
-    pool_layer = nn.Identity() if args.no_pool else None
-    classifier = ImageClassifier(backbone, num_classes, bottleneck_dim=args.bottleneck_dim,
-                                 pool_layer=pool_layer, finetune=not args.scratch).to(device)
+    pool_layer = nn.Identity() if cfg.MODEL.NO_POOL else None
+    classifier = ImageClassifier(backbone, num_classes, bottleneck_dim=cfg.MODEL.BOTTLENECK_DIM,
+                                 pool_layer=pool_layer, finetune=not cfg.MODEL.SCRATCH).to(device)
     domain_discri = DomainDiscriminator(in_feature=classifier.features_dim, hidden_size=1024).to(device)
 
     # define optimizer and lr scheduler
     optimizer = SGD(classifier.get_parameters() + domain_discri.get_parameters(),
-                    args.lr, momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True)
-    lr_scheduler = LambdaLR(optimizer, lambda x: args.lr * (1. + args.lr_gamma * float(x)) ** (-args.lr_decay))
+                    cfg.SOLVER.LR, momentum=cfg.SOLVER.MOMENTUM, weight_decay=cfg.SOLVER.WEIGHT_DECAY, nesterov=True)
+    lr_scheduler = LambdaLR(optimizer, lambda x: cfg.SOLVER.LR * (1. + cfg.SOLVER.LR_GAMMA * float(x)) ** (-cfg.SOLVER.LR_DECAY))
 
     # define loss function
     domain_adv = DomainAdversarialLoss(domain_discri).to(device)
 
     # resume from the best checkpoint
-    if args.phase != 'train':
+    if cfg.SOLVER.PHASE != 'train':
         checkpoint = torch.load(logger.get_checkpoint_path('best'), map_location='cpu')
         classifier.load_state_dict(checkpoint)
 
     # analysis the model
-    if args.phase == 'analysis':
+    if cfg.SOLVER.PHASE == 'analysis':
         # extract features from both domains
         feature_extractor = nn.Sequential(classifier.backbone, classifier.pool_layer, classifier.bottleneck).to(device)
         source_feature = collect_feature(train_source_loader, feature_extractor, device)
@@ -121,21 +161,21 @@ def main(args: argparse.Namespace):
         print("A-distance =", A_distance)
         return
 
-    if args.phase == 'test':
-        acc1 = utils.validate(test_loader, classifier, args, device)
+    if cfg.SOLVER.PHASE == 'test':
+        acc1 = validate(test_loader, classifier, cfg, device, class_names, experiment)
         print(acc1)
         return
 
     # start training
     best_acc1 = 0.
-    for epoch in range(args.epochs):
+    for epoch in range(cfg.SOLVER.NUM_EPOCHS):
         print("lr:", lr_scheduler.get_last_lr()[0])
         # train for one epoch
         train(train_source_iter, train_target_iter, classifier, domain_adv, optimizer,
-              lr_scheduler, epoch, args)
+              lr_scheduler, epoch, cfg, experiment)
 
         # evaluate on validation set
-        acc1 = utils.validate(val_loader, classifier, args, device)
+        acc1 = validate(val_loader, classifier, cfg, device, class_names, experiment, epoch)
 
         # remember best acc@1 and save checkpoint
         torch.save(classifier.state_dict(), logger.get_checkpoint_path('latest'))
@@ -147,7 +187,7 @@ def main(args: argparse.Namespace):
 
     # evaluate on test set
     classifier.load_state_dict(torch.load(logger.get_checkpoint_path('best')))
-    acc1 = utils.validate(test_loader, classifier, args, device)
+    acc1 = validate(test_loader, classifier, cfg, device, class_names, experiment)
     print("test_acc1 = {:3.1f}".format(acc1))
 
     logger.close()
@@ -155,14 +195,14 @@ def main(args: argparse.Namespace):
 
 def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverDataIterator,
           model: ImageClassifier, domain_adv: DomainAdversarialLoss, optimizer: SGD,
-          lr_scheduler: LambdaLR, epoch: int, args: argparse.Namespace):
+          lr_scheduler: LambdaLR, epoch: int, cfg, experiment):
     batch_time = AverageMeter('Time', ':5.2f')
     data_time = AverageMeter('Data', ':5.2f')
     losses = AverageMeter('Loss', ':6.2f')
     cls_accs = AverageMeter('Cls Acc', ':3.1f')
     domain_accs = AverageMeter('Domain Acc', ':3.1f')
     progress = ProgressMeter(
-        args.iters_per_epoch,
+        cfg.SOLVER.ITERS_PER_EPOCH,
         [batch_time, data_time, losses, cls_accs, domain_accs],
         prefix="Epoch: [{}]".format(epoch))
 
@@ -171,7 +211,7 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
     domain_adv.train()
 
     end = time.time()
-    for i in range(args.iters_per_epoch):
+    for i in range(cfg.SOLVER.ITERS_PER_EPOCH):
         x_s, labels_s = next(train_source_iter)
         x_t, _ = next(train_target_iter)
         labels_s = labels_s[0]
@@ -192,9 +232,15 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         cls_loss = F.cross_entropy(y_s, labels_s)
         transfer_loss = domain_adv(f_s, f_t)
         domain_acc = domain_adv.domain_discriminator_accuracy
-        loss = cls_loss + transfer_loss * args.trade_off
+        loss = cls_loss + transfer_loss * cfg.MODEL.TRADE_OFF
 
         cls_acc = accuracy(y_s, labels_s)[0]
+
+        if cfg.COMET.ENABLE:
+            experiment.log_metric('src_cls_loss', cls_loss.item(), epoch=epoch)
+            experiment.log_metric('adv_loss', transfer_loss.item(), epoch=epoch)
+            experiment.log_metric('domain_acc', domain_acc, epoch=epoch)
+            experiment.log_metric('src_cls_acc', cls_acc, epoch=epoch)
 
         losses.update(loss.item(), x_s.size(0))
         cls_accs.update(cls_acc.item(), x_s.size(0))
@@ -210,13 +256,67 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         batch_time.update(time.time() - end)
         end = time.time()
 
-        if i % args.print_freq == 0:
+        if i % cfg.SOLVER.PRINT_FREQ == 0:
             progress.display(i)
 
+
+def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None) -> float:
+    batch_time = AverageMeter('Time', ':6.3f')
+    losses = AverageMeter('Loss', ':.4e')
+    top1 = AverageMeter('Acc@1', ':6.2f')
+    progress = ProgressMeter(
+        len(val_loader),
+        [batch_time, losses, top1],
+        prefix='Test: ')
+
+    # switch to evaluate mode
+    model.eval()
+    if cfg.SOLVER.PER_CLASS_EVAL:
+        confmat = ConfusionMatrix(len(class_names))
+    else:
+        confmat = None
+
+    with torch.no_grad():
+        end = time.time()
+        for i, (images, target) in enumerate(val_loader):
+            images = images.to(device)
+            target = target[0]
+            target = target.to(device)
+
+            # compute output
+            output = model(images)
+            loss = F.cross_entropy(output, target)
+
+            # measure accuracy and record loss
+            acc1, = accuracy(output, target, topk=(1,))
+            if confmat:
+                confmat.update(target, output.argmax(1))
+
+            if cfg.COMET.ENABLE:
+                experiment.log_metric('val_loss', loss.item(), epoch=epoch)
+                experiment.log_metric('val_acc', acc1.item(), epoch=epoch)
+
+            losses.update(loss.item(), images.size(0))
+            top1.update(acc1.item(), images.size(0))
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if i % cfg.SOLVER.PRINT_FREQ == 0:
+                progress.display(i)
+
+        print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
+        if confmat:
+            print(confmat.format(class_names))
+
+    return top1.avg
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='DANN for Unsupervised Domain Adaptation')
     parser.add_argument("--cfg", required=True, help="path to config file", type=str)
+    parser.add_argument("--task", default="dann", type=str, metavar="TASK",
+                        help="Task name.")
     # dataset parameters
     # parser.add_argument('root', metavar='DIR',
     #                     help='root path of dataset')
@@ -225,58 +325,62 @@ if __name__ == '__main__':
     #                          ' (default: Office31)')
     # parser.add_argument('-s', '--source', help='source domain(s)', nargs='+')
     # parser.add_argument('-t', '--target', help='target domain(s)', nargs='+')
-    parser.add_argument('--train-resizing', type=str, default='default')
-    parser.add_argument('--val-resizing', type=str, default='default')
-    parser.add_argument('--resize-size', type=int, default=224,
-                        help='the image size after resizing')
-    parser.add_argument('--no-hflip', action='store_true',
-                        help='no random horizontal flipping during training')
-    parser.add_argument('--norm-mean', type=float, nargs='+',
-                        default=(0.485, 0.456, 0.406), help='normalization mean')
-    parser.add_argument('--norm-std', type=float, nargs='+',
-                        default=(0.229, 0.224, 0.225), help='normalization std')
+
+
+    # parser.add_argument('--train-resizing', type=str, default='default')
+    # parser.add_argument('--val-resizing', type=str, default='default')
+    # parser.add_argument('--resize-size', type=int, default=224,
+    #                     help='the image size after resizing')
+    # parser.add_argument('--no-hflip', action='store_true',
+    #                     help='no random horizontal flipping during training')
+    # parser.add_argument('--norm-mean', type=float, nargs='+',
+    #                     default=(0.485, 0.456, 0.406), help='normalization mean')
+    # parser.add_argument('--norm-std', type=float, nargs='+',
+    #                     default=(0.229, 0.224, 0.225), help='normalization std')
+
+
     # model parameters
-    parser.add_argument('-a', '--arch', metavar='ARCH', default='simple',
-                        choices=utils.get_model_names(),
-                        help='backbone architecture: ' +
-                             ' | '.join(utils.get_model_names()) +
-                             ' (default: resnet18)')
-    parser.add_argument('--bottleneck-dim', default=256, type=int,
-                        help='Dimension of bottleneck')
-    parser.add_argument('--no-pool', action='store_true',
-                        help='no pool layer after the feature extractor.')
-    parser.add_argument('--scratch', action='store_true', help='whether train from scratch.')
-    parser.add_argument('--trade-off', default=1., type=float,
-                        help='the trade-off hyper-parameter for transfer loss')
+    # parser.add_argument('-a', '--arch', metavar='ARCH', default='simple',
+    #                     choices=utils.get_model_names(),
+    #                     help='backbone architecture: ' +
+    #                          ' | '.join(utils.get_model_names()) +
+    #                          ' (default: resnet18)')
+    # parser.add_argument('--bottleneck-dim', default=256, type=int,
+    #                     help='Dimension of bottleneck')
+    # parser.add_argument('--no-pool', action='store_true',
+    #                     help='no pool layer after the feature extractor.')
+    # parser.add_argument('--scratch', action='store_true', help='whether train from scratch.')
+    # parser.add_argument('--trade-off', default=1., type=float,
+    #                     help='the trade-off hyper-parameter for transfer loss')
     # training parameters
-    parser.add_argument('-b', '--batch-size', default=32, type=int,
-                        metavar='N',
-                        help='mini-batch size (default: 32)')
-    parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
-                        metavar='LR', help='initial learning rate', dest='lr')
-    parser.add_argument('--lr-gamma', default=0.001, type=float, help='parameter for lr scheduler')
-    parser.add_argument('--lr-decay', default=0.75, type=float, help='parameter for lr scheduler')
-    parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                        help='momentum')
-    parser.add_argument('--wd', '--weight-decay', default=1e-3, type=float,
-                        metavar='W', help='weight decay (default: 1e-3)',
-                        dest='weight_decay')
-    parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
-                        help='number of data loading workers (default: 2)')
-    parser.add_argument('--epochs', default=20, type=int, metavar='N',
-                        help='number of total epochs to run')
-    parser.add_argument('-i', '--iters-per-epoch', default=1000, type=int,
-                        help='Number of iterations per epoch')
-    parser.add_argument('-p', '--print-freq', default=100, type=int,
-                        metavar='N', help='print frequency (default: 100)')
-    parser.add_argument('--seed', default=None, type=int,
-                        help='seed for initializing training. ')
-    parser.add_argument('--per-class-eval', action='store_true',
-                        help='whether output per-class accuracy during evaluation')
-    parser.add_argument("--log", type=str, default='dann',
-                        help="Where to save logs, checkpoints and debugging images.")
-    parser.add_argument("--phase", type=str, default='train', choices=['train', 'test', 'analysis'],
-                        help="When phase is 'test', only test the model."
-                             "When phase is 'analysis', only analysis the model.")
+    # parser.add_argument('-b', '--batch-size', default=32, type=int,
+    #                     metavar='N',
+    #                     help='mini-batch size (default: 32)')
+    # parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
+    #                     metavar='LR', help='initial learning rate', dest='lr')
+    # parser.add_argument('--lr-gamma', default=0.001, type=float, help='parameter for lr scheduler')
+    # parser.add_argument('--lr-decay', default=0.75, type=float, help='parameter for lr scheduler')
+    # parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+    #                     help='momentum')
+    # parser.add_argument('--wd', '--weight-decay', default=1e-3, type=float,
+    #                     metavar='W', help='weight decay (default: 1e-3)',
+    #                     dest='weight_decay')
+    # parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
+    #                     help='number of data loading workers (default: 2)')
+    # parser.add_argument('--epochs', default=20, type=int, metavar='N',
+    #                     help='number of total epochs to run')
+    # parser.add_argument('-i', '--iters-per-epoch', default=1000, type=int,
+    #                     help='Number of iterations per epoch')
+    # parser.add_argument('-p', '--print-freq', default=100, type=int,
+    #                     metavar='N', help='print frequency (default: 100)')
+    # parser.add_argument('--seed', default=None, type=int,
+    #                     help='seed for initializing training. ')
+    # parser.add_argument('--per-class-eval', action='store_true',
+    #                     help='whether output per-class accuracy during evaluation')
+    # parser.add_argument("--log", type=str, default='dann',
+    #                     help="Where to save logs, checkpoints and debugging images.")
+    # parser.add_argument("--phase", type=str, default='train', choices=['train', 'test', 'analysis'],
+    #                     help="When phase is 'test', only test the model."
+    #                          "When phase is 'analysis', only analysis the model.")
     args = parser.parse_args()
     main(args)
