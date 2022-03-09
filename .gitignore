@@ -131,3 +131,6 @@ exp/*
 trash/*
 examples/domain_adaptation/digits/logs/*
 examples/domain_adaptation/digits/data/*
+examples/domain_adaptation/image_classification/data/*
+examples/domain_adaptation/image_classification/dann/*
+examples/domain_adaptation/video_classification/dann/*
