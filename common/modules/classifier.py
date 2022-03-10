@@ -77,9 +77,7 @@ class Classifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """"""
-        # f = self.pool_layer(self.backbone(x))
-        f = self.backbone(x)
-        f = nn.AdaptiveAvgPool1d(1)(f.transpose(1, 2)).squeeze(2)
+        f = self.pool_layer(self.backbone(x))
         f = self.bottleneck(f)
         predictions = self.head(f)
         if self.training:
