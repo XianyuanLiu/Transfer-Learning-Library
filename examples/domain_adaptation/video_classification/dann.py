@@ -128,7 +128,7 @@ def main(args: argparse.Namespace):
     print("=> using model '{}'".format(cfg.MODEL.ARCH))
     # backbone = utils.get_model(cfg.MODEL.ARCH, pretrain=not cfg.MODEL.SCRATCH)
     backbone = utils.LinearNet(in_feature=1024, out_feature=1024)
-    pool_layer = nn.Identity() if cfg.MODEL.NO_POOL else None
+    pool_layer = nn.Identity() if cfg.MODEL.NO_POOL else utils.Pooling()
     classifier = ImageClassifier(backbone, num_classes, bottleneck_dim=cfg.MODEL.BOTTLENECK_DIM,
                                  pool_layer=pool_layer, finetune=not cfg.MODEL.SCRATCH).to(device)
     domain_discri = DomainDiscriminator(in_feature=classifier.features_dim, hidden_size=1024).to(device)
@@ -162,7 +162,7 @@ def main(args: argparse.Namespace):
         return
 
     if cfg.SOLVER.PHASE == 'test':
-        acc1 = validate(test_loader, classifier, cfg, device, class_names, experiment)
+        acc1 = utils.validate(test_loader, classifier, cfg, device, class_names, experiment)
         print(acc1)
         return
 
@@ -175,7 +175,7 @@ def main(args: argparse.Namespace):
               lr_scheduler, epoch, cfg, experiment)
 
         # evaluate on validation set
-        acc1 = validate(val_loader, classifier, cfg, device, class_names, experiment, epoch)
+        acc1 = utils.validate(val_loader, classifier, cfg, device, class_names, experiment, epoch)
 
         # remember best acc@1 and save checkpoint
         torch.save(classifier.state_dict(), logger.get_checkpoint_path('latest'))
@@ -187,7 +187,7 @@ def main(args: argparse.Namespace):
 
     # evaluate on test set
     classifier.load_state_dict(torch.load(logger.get_checkpoint_path('best')))
-    acc1 = validate(test_loader, classifier, cfg, device, class_names, experiment)
+    acc1 = utils.validate(test_loader, classifier, cfg, device, class_names, experiment)
     print("test_acc1 = {:3.1f}".format(acc1))
 
     logger.close()
@@ -260,57 +260,7 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
             progress.display(i)
 
 
-def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None) -> float:
-    batch_time = AverageMeter('Time', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    progress = ProgressMeter(
-        len(val_loader),
-        [batch_time, losses, top1],
-        prefix='Test: ')
 
-    # switch to evaluate mode
-    model.eval()
-    if cfg.SOLVER.PER_CLASS_EVAL:
-        confmat = ConfusionMatrix(len(class_names))
-    else:
-        confmat = None
-
-    with torch.no_grad():
-        end = time.time()
-        for i, (images, target) in enumerate(val_loader):
-            images = images.to(device)
-            target = target[0]
-            target = target.to(device)
-
-            # compute output
-            output = model(images)
-            loss = F.cross_entropy(output, target)
-
-            # measure accuracy and record loss
-            acc1, = accuracy(output, target, topk=(1,))
-            if confmat:
-                confmat.update(target, output.argmax(1))
-
-            if cfg.COMET.ENABLE:
-                experiment.log_metric('val_loss', loss.item(), epoch=epoch)
-                experiment.log_metric('val_acc', acc1.item(), epoch=epoch)
-
-            losses.update(loss.item(), images.size(0))
-            top1.update(acc1.item(), images.size(0))
-
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-            if i % cfg.SOLVER.PRINT_FREQ == 0:
-                progress.display(i)
-
-        print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
-        if confmat:
-            print(confmat.format(class_names))
-
-    return top1.avg
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='DANN for Unsupervised Domain Adaptation')
