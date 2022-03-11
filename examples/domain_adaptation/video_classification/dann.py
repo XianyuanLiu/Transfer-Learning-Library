@@ -9,6 +9,7 @@ import sys
 import argparse
 import shutil
 import os.path as osp
+from comet_ml import Experiment
 
 import torch
 import torch.nn as nn
@@ -17,13 +18,12 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
-from comet_ml import Experiment
 
 sys.path.append('../../..')
 from dalib.modules.domain_discriminator import DomainDiscriminator
 from dalib.adaptation.dann import DomainAdversarialLoss, ImageClassifier
 from common.utils.data import ForeverDataIterator
-from common.utils.metric import accuracy, ConfusionMatrix
+from common.utils.metric import accuracy
 from common.utils.meter import AverageMeter, ProgressMeter
 from common.utils.logger import CompleteLogger
 from common.utils.analysis import collect_feature, tsne, a_distance
@@ -116,9 +116,9 @@ def main(args: argparse.Namespace):
                                      shuffle=True, num_workers=cfg.SOLVER.WORKERS, drop_last=True)
     train_target_loader = DataLoader(train_target_dataset, batch_size=cfg.SOLVER.BATCH_SIZE,
                                      shuffle=True, num_workers=cfg.SOLVER.WORKERS, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=cfg.SOLVER.BATCH_SIZE, 
+    val_loader = DataLoader(val_dataset, batch_size=cfg.SOLVER.BATCH_SIZE,
                             shuffle=False, num_workers=cfg.SOLVER.WORKERS)
-    test_loader = DataLoader(test_dataset, batch_size=cfg.SOLVER.BATCH_SIZE, 
+    test_loader = DataLoader(test_dataset, batch_size=cfg.SOLVER.BATCH_SIZE,
                              shuffle=False, num_workers=cfg.SOLVER.WORKERS)
 
     train_source_iter = ForeverDataIterator(train_source_loader)
@@ -136,7 +136,8 @@ def main(args: argparse.Namespace):
     # define optimizer and lr scheduler
     optimizer = SGD(classifier.get_parameters() + domain_discri.get_parameters(),
                     cfg.SOLVER.LR, momentum=cfg.SOLVER.MOMENTUM, weight_decay=cfg.SOLVER.WEIGHT_DECAY, nesterov=True)
-    lr_scheduler = LambdaLR(optimizer, lambda x: cfg.SOLVER.LR * (1. + cfg.SOLVER.LR_GAMMA * float(x)) ** (-cfg.SOLVER.LR_DECAY))
+    lr_scheduler = LambdaLR(optimizer,
+                            lambda x: cfg.SOLVER.LR * (1. + cfg.SOLVER.LR_GAMMA * float(x)) ** (-cfg.SOLVER.LR_DECAY))
 
     # define loss function
     domain_adv = DomainAdversarialLoss(domain_discri).to(device)
@@ -191,6 +192,7 @@ def main(args: argparse.Namespace):
     print("test_acc1 = {:3.1f}".format(acc1))
 
     logger.close()
+    experiment.end()
 
 
 def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverDataIterator,
@@ -215,6 +217,10 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         x_s, labels_s = next(train_source_iter)
         x_t, _ = next(train_target_iter)
         labels_s = labels_s[0]
+
+        # if cfg.COMET.ENABLE:
+        #     experiment.log_image(x_s, name='src_img_gt:{}'.format(x_s))
+        #     experiment.log_image(x_t, name='tgt_img_gt:{}'.format(x_t))
 
         x_s = x_s.to(device)
         x_t = x_t.to(device)
@@ -249,6 +255,17 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
+
+        if cfg.COMET.ENABLE:
+            gradmap = {}
+            gradmap = utils.update_gradient_map(model, gradmap)
+
+            # scale gradients
+            for k, v in gradmap.items():
+                gradmap[k] = v / cfg.SOLVER.ITERS_PER_EPOCH
+            utils.log_gradients(gradmap, epoch * cfg.SOLVER.ITERS_PER_EPOCH, experiment)
+            utils.log_weights(model, epoch * cfg.SOLVER.ITERS_PER_EPOCH, experiment)
+
         optimizer.step()
         lr_scheduler.step()
 
@@ -258,8 +275,6 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
 
         if i % cfg.SOLVER.PRINT_FREQ == 0:
             progress.display(i)
-
-
 
 
 if __name__ == '__main__':
@@ -276,7 +291,6 @@ if __name__ == '__main__':
     # parser.add_argument('-s', '--source', help='source domain(s)', nargs='+')
     # parser.add_argument('-t', '--target', help='target domain(s)', nargs='+')
 
-
     # parser.add_argument('--train-resizing', type=str, default='default')
     # parser.add_argument('--val-resizing', type=str, default='default')
     # parser.add_argument('--resize-size', type=int, default=224,
@@ -287,7 +301,6 @@ if __name__ == '__main__':
     #                     default=(0.485, 0.456, 0.406), help='normalization mean')
     # parser.add_argument('--norm-std', type=float, nargs='+',
     #                     default=(0.229, 0.224, 0.225), help='normalization std')
-
 
     # model parameters
     # parser.add_argument('-a', '--arch', metavar='ARCH', default='simple',
