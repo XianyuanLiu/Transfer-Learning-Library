@@ -468,7 +468,7 @@ class VideoDataset(Enum):
         val_dataset = rgb_target.get_test()
         test_dataset = rgb_target.get_test()
         num_classes = num_verb_classes
-        class_names = None
+        class_names = [i for i in range(num_classes)]
 
         return train_source_dataset, train_target_dataset, val_dataset, test_dataset, num_classes, class_names
 
