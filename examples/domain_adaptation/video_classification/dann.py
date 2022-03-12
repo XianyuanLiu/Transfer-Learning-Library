@@ -163,7 +163,7 @@ def main(args: argparse.Namespace):
         return
 
     if cfg.SOLVER.PHASE == 'test':
-        acc1 = utils.validate(test_loader, classifier, cfg, device, class_names, experiment)
+        acc1 = utils.validate(test_loader, classifier, cfg, device, class_names, experiment, name="test")
         print(acc1)
         return
 
@@ -176,7 +176,7 @@ def main(args: argparse.Namespace):
               lr_scheduler, epoch, cfg, experiment)
 
         # evaluate on validation set
-        acc1 = utils.validate(val_loader, classifier, cfg, device, class_names, experiment, epoch)
+        acc1 = utils.validate(val_loader, classifier, cfg, device, class_names, experiment, epoch, "valid")
 
         # remember best acc@1 and save checkpoint
         torch.save(classifier.state_dict(), logger.get_checkpoint_path('latest'))
@@ -188,7 +188,7 @@ def main(args: argparse.Namespace):
 
     # evaluate on test set
     classifier.load_state_dict(torch.load(logger.get_checkpoint_path('best')))
-    acc1 = utils.validate(test_loader, classifier, cfg, device, class_names, experiment)
+    acc1 = utils.validate(test_loader, classifier, cfg, device, class_names, experiment, name="test")
     print("test_acc1 = {:3.1f}".format(acc1))
 
     logger.close()

@@ -2,8 +2,10 @@
 @author: Junguang Jiang, Baixu Chen
 @contact: JiangJunguang1123@outlook.com, cbx_99_hasta@outlook.com
 """
+import math
 import sys
 import os.path as osp
+import comet_ml
 import time
 from collections import OrderedDict
 from copy import deepcopy
@@ -91,10 +93,11 @@ def log_weights(model, step, experiment):
         experiment.log_histogram_3d(to_numpy(layer.bias), name=bname, step=step)
 
 
-def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None) -> float:
+def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None, name=None) -> float:
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
+    # cm = comet_ml.ConfusionMatrix()
     progress = ProgressMeter(
         len(val_loader),
         [batch_time, losses, top1],
@@ -124,6 +127,7 @@ def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None
                 confmat.update(target, output.argmax(1))
 
             if cfg.COMET.ENABLE:
+                experiment.log_metric("train_loss", loss.item(), epoch=epoch)
                 experiment.log_metric('val_loss', loss.item(), epoch=epoch)
                 experiment.log_metric('val_acc', acc1.item(), epoch=epoch)
 
@@ -139,7 +143,14 @@ def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None
 
         print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
         if confmat:
-            print(confmat.format(class_names))
+            # print(confmat.format(class_names))
+            if cfg.COMET.ENABLE and name == "valid":
+                experiment.log_confusion_matrix(
+                    matrix=confmat.mat.tolist(),
+                    title="Confusion Matrix, Epoch {}".format(epoch + 1),
+                    file_name="confusion_matrix_{}.json".format(epoch + 1),
+                    overwrite=True
+                )
 
     return top1.avg
 
@@ -598,6 +609,20 @@ class EPIC100DatasetAccess(VideoDatasetAccess):
         )
 
 
+class Pooling(nn.Module):
+    def __init__(self):
+        super(Pooling, self).__init__()
+        self.net = nn.Sequential(
+            OrderedDict(
+                [("avgpool", nn.AdaptiveAvgPool1d(1)), ]
+            )
+        )
+
+    def forward(self, x):
+        x = self.net(x.transpose(1, 2)).squeeze(2)
+        return x
+
+
 class LinearNet(nn.Module):
     def __init__(self, in_feature=1024, hidden_size=256, out_feature=1024):
         super(LinearNet, self).__init__()
@@ -628,15 +653,130 @@ class LinearNet(nn.Module):
         return self._out_feature
 
 
-class Pooling(nn.Module):
-    def __init__(self):
-        super(Pooling, self).__init__()
-        self.net = nn.Sequential(
-            OrderedDict(
-                [("avgpool", nn.AdaptiveAvgPool1d(1)), ]
+class SelfAttention(nn.Module):
+    """A vanilla multi-head attention layer with a projection at the end. Can be set to causal or not causal."""
+
+    def __init__(
+        self, emb_dim, num_heads, att_dropout, final_dropout, causal=False, max_seq_len=10000, use_performer_att=False
+    ):
+        super().__init__()
+        assert emb_dim % num_heads == 0
+        # key, query, value projections for all heads
+        self.key = nn.Linear(emb_dim, emb_dim)
+        self.query = nn.Linear(emb_dim, emb_dim)
+        self.value = nn.Linear(emb_dim, emb_dim)
+        # regularization
+        self.att_dropout = nn.Dropout(att_dropout)
+        self.final_dropout = nn.Dropout(final_dropout)
+        # output projection
+        self.proj = nn.Linear(emb_dim, emb_dim)
+        self.causal = causal
+        if causal:
+            # causal mask to ensure that attention is only applied to the left in the input sequence
+            self.register_buffer(
+                "mask", torch.tril(torch.ones(max_seq_len, max_seq_len)).view(1, 1, max_seq_len, max_seq_len)
             )
+
+        self.num_heads = num_heads
+
+        self.use_performer_att = use_performer_att
+        # if self.use_performer_att:
+        #     self.performer_att = FastAttention(dim_heads=emb_dim//num_heads, nb_features=emb_dim, causal=False)
+
+    def forward(self, x):
+        B, T, C = x.size()
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        k = self.key(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)  # (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)  # (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)  # (B, nh, T, hs)
+
+        if not self.use_performer_att:
+            # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            if self.causal:
+                att = att.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
+            att = F.softmax(att, dim=-1)
+            att = self.att_dropout(att)
+            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        else:
+            y = self.performer_att(q, k, v)
+
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
+
+        # output projection
+        y = self.final_dropout(self.proj(y))
+        return y
+
+
+class TransformerBlock(nn.Module):
+    """
+    Standard transformer block consisting of multi-head attention and two-layer MLP.
+    """
+
+    def __init__(
+        self, emb_dim, num_heads, att_dropout, att_resid_dropout, final_dropout, max_seq_len, ff_dim, causal=False,
+    ):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(emb_dim)
+        self.ln2 = nn.LayerNorm(emb_dim)
+        self.attn = SelfAttention(emb_dim, num_heads, att_dropout, att_resid_dropout, causal, max_seq_len)
+        self.mlp = nn.Sequential(
+            nn.Linear(emb_dim, ff_dim), nn.GELU(), nn.Linear(ff_dim, emb_dim), nn.Dropout(final_dropout),
         )
 
     def forward(self, x):
-        x = self.net(x.transpose(1, 2)).squeeze(2)
+        # BATCH, TIME, CHANNELS = x.size()
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
         return x
+
+
+class TransformerSENet(nn.Module):
+    """Regular simple network for video input.
+    Args:
+        in_feature (int, optional): the dimension of the final feature vector.
+        hidden_size (int, optional): the number of channel for Linear and BN layers.
+        out_feature (int, optional): the dimension of output.
+    """
+
+    def __init__(self, in_feature=1024, hidden_size=512, out_feature=1024):
+        super(TransformerSENet, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = 4
+        self.num_heads = 8
+
+        self.transformer = nn.ModuleList(
+            [
+                TransformerBlock(
+                    emb_dim=in_feature,
+                    num_heads=self.num_heads,
+                    att_dropout=0.1,
+                    att_resid_dropout=0.1,
+                    final_dropout=0.1,
+                    max_seq_len=9,
+                    ff_dim=self.hidden_size,
+                    causal=False,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+
+        # self.fc1 = nn.Linear(input_size, n_channel)
+        # self.relu1 = nn.ReLU()
+        # self.dp1 = nn.Dropout(dropout_keep_prob)
+        # self.fc2 = nn.Linear(n_channel, output_size)
+        # self.fc3 = nn.Linear(input_size, output_size)
+        # self.selayer = SELayerFeat(channel=16, reduction=4)
+
+    def forward(self, x):
+        for layer in self.transformer:
+            x = layer(x)
+        # x = self.fc2(self.dp1(self.relu1(self.fc1(x))))
+        # x = self.fc3(x)
+        # x = self.selayer(x)
+        return x
+
+    def out_features(self):
+        """The dimension of output features"""
+        return self._out_feature
