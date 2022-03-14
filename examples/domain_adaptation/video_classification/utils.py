@@ -127,7 +127,6 @@ def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None
                 confmat.update(target, output.argmax(1))
 
             if cfg.COMET.ENABLE:
-                experiment.log_metric("train_loss", loss.item(), epoch=epoch)
                 experiment.log_metric('val_loss', loss.item(), epoch=epoch)
                 experiment.log_metric('val_acc', acc1.item(), epoch=epoch)
 
@@ -743,6 +742,7 @@ class TransformerSENet(nn.Module):
     def __init__(self, in_feature=1024, hidden_size=512, out_feature=1024):
         super(TransformerSENet, self).__init__()
         self.hidden_size = hidden_size
+        self._out_feature = out_feature
         self.num_layers = 4
         self.num_heads = 8
 

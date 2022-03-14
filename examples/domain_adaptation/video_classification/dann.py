@@ -127,7 +127,8 @@ def main(args: argparse.Namespace):
     # create model
     print("=> using model '{}'".format(cfg.MODEL.ARCH))
     # backbone = utils.get_model(cfg.MODEL.ARCH, pretrain=not cfg.MODEL.SCRATCH)
-    backbone = utils.LinearNet(in_feature=1024, out_feature=1024)
+    # backbone = utils.LinearNet(in_feature=1024, out_feature=1024)
+    backbone = utils.TransformerSENet(in_feature=1024, hidden_size=512, out_feature=1024)
     pool_layer = nn.Identity() if cfg.MODEL.NO_POOL else utils.Pooling()
     classifier = ImageClassifier(backbone, num_classes, bottleneck_dim=cfg.MODEL.BOTTLENECK_DIM,
                                  pool_layer=pool_layer, finetune=not cfg.MODEL.SCRATCH).to(device)
@@ -243,8 +244,9 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         cls_acc = accuracy(y_s, labels_s)[0]
 
         if cfg.COMET.ENABLE:
+            experiment.log_metric('train_loss', loss.item(), epoch=epoch)
             experiment.log_metric('src_cls_loss', cls_loss.item(), epoch=epoch)
-            experiment.log_metric('adv_loss', transfer_loss.item(), epoch=epoch)
+            experiment.log_metric('domain_loss', transfer_loss.item(), epoch=epoch)
             experiment.log_metric('domain_acc', domain_acc, epoch=epoch)
             experiment.log_metric('src_cls_acc', cls_acc, epoch=epoch)
 
