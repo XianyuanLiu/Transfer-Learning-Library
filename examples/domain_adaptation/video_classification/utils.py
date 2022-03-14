@@ -656,7 +656,8 @@ class SelfAttention(nn.Module):
     """A vanilla multi-head attention layer with a projection at the end. Can be set to causal or not causal."""
 
     def __init__(
-        self, emb_dim, num_heads, att_dropout, final_dropout, causal=False, max_seq_len=10000, use_performer_att=False
+            self, emb_dim, num_heads, att_dropout, final_dropout, causal=False, max_seq_len=10000,
+            use_performer_att=False
     ):
         super().__init__()
         assert emb_dim % num_heads == 0
@@ -714,7 +715,7 @@ class TransformerBlock(nn.Module):
     """
 
     def __init__(
-        self, emb_dim, num_heads, att_dropout, att_resid_dropout, final_dropout, max_seq_len, ff_dim, causal=False,
+            self, emb_dim, num_heads, att_dropout, att_resid_dropout, final_dropout, max_seq_len, ff_dim, causal=False,
     ):
         super().__init__()
         self.ln1 = nn.LayerNorm(emb_dim)
@@ -777,6 +778,7 @@ class TransformerSENet(nn.Module):
         # x = self.selayer(x)
         return x
 
+    @property
     def out_features(self):
         """The dimension of output features"""
         return self._out_feature
