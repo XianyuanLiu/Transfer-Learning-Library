@@ -66,6 +66,8 @@ _C.MODEL.TRADE_OFF = 1.0
 # -----------------------------------------------------------------------------
 _C.COMET = CN()
 _C.COMET.ENABLE = True
+_C.COMET.LOG_HISTOGRAMS = False
+_C.COMET.LOG_CONFUSION_MATRIX = False
 _C.COMET.API_KEY = "hXBdBG8FvfWxyLYwJRZlHi9GB"
 _C.COMET.PROJECT_NAME = "Action Recognition Domain Adaptation"
 
