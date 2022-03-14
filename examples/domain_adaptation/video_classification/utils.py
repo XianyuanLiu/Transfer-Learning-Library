@@ -141,7 +141,7 @@ def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None
                 progress.display(i)
 
         print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
-        if confmat:
+        if confmat and cfg.COMET.LOG_CONFUSION_MATRIX:
             # print(confmat.format(class_names))
             if cfg.COMET.ENABLE and name == "valid" and epoch % 5 == 0:
                 experiment.log_confusion_matrix(

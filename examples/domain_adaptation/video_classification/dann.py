@@ -258,7 +258,7 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         optimizer.zero_grad()
         loss.backward()
 
-        if cfg.COMET.ENABLE:
+        if cfg.COMET.ENABLE and cfg.COMET.LOG_HISTOGRAM:
             gradmap = {}
             gradmap = utils.update_gradient_map(model, gradmap)
 
