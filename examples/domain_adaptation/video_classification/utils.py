@@ -143,12 +143,12 @@ def validate(val_loader, model, cfg, device, class_names, experiment, epoch=None
         print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
         if confmat:
             # print(confmat.format(class_names))
-            if cfg.COMET.ENABLE and name == "valid":
+            if cfg.COMET.ENABLE and name == "valid" and epoch % 5 == 0:
                 experiment.log_confusion_matrix(
                     matrix=confmat.mat.tolist(),
                     title="Confusion Matrix, Epoch {}".format(epoch + 1),
                     file_name="confusion_matrix_{}.json".format(epoch + 1),
-                    overwrite=True
+                    max_categories=len(class_names),
                 )
 
     return top1.avg
