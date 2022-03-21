@@ -63,7 +63,7 @@ def main(args: argparse.Namespace):
         "seed": args.seed,
     }
     experiment.log_parameters(hyper_params)
-    experiment.set_name(f"{args.task}_{suffix}")
+    experiment.set_name(f"dann_{suffix}")
 
     if args.seed is not None:
         random.seed(args.seed)
