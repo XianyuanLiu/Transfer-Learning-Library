@@ -106,7 +106,7 @@ def get_dataset(dataset_name, root, source, target, train_source_transform, val_
     return train_source_dataset, train_target_dataset, val_dataset, test_dataset, num_classes, class_names
 
 
-def validate(val_loader, model, args, device) -> float:
+def validate(val_loader, model, args, device, experiment, epoch) -> float:
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -136,6 +136,10 @@ def validate(val_loader, model, args, device) -> float:
             acc1, = accuracy(output, target, topk=(1,))
             if confmat:
                 confmat.update(target, output.argmax(1))
+
+            experiment.log_metric('val_loss', loss.item(), epoch=epoch)
+            experiment.log_metric('val_acc', acc1.item(), epoch=epoch)
+
             losses.update(loss.item(), images.size(0))
             top1.update(acc1.item(), images.size(0))
 

@@ -13,6 +13,7 @@ import os.path as osp
 import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
+from comet_ml import Experiment
 from torch.optim import SGD
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -36,6 +37,34 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def main(args: argparse.Namespace):
     logger = CompleteLogger(args.log, args.phase)
     print(args)
+
+    suffix = str(int(time.time() * 1000))[6:]
+    experiment = Experiment(
+        api_key="fwDWzM3HmQuZuFGFS2q90vLT3",
+        project_name="digits-da",
+        auto_output_logging="simple",
+        log_graph=True,
+        log_code=False,
+        log_git_metadata=False,
+        log_git_patch=False,
+        auto_param_logging=False,
+        auto_metric_logging=False,
+    )
+    hyper_params = {
+        "source": args.source,
+        "target": args.target,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+        "lr_gamma": args.lr_gamma,
+        "lr_decay": args.lr_decay,
+        "momentum": args.momentum,
+        "weight_decay": args.weight_decay,
+        "num_epochs": args.epochs,
+        "seed": args.seed,
+        "phase": args.train,
+    }
+    experiment.log_parameters(hyper_params)
+    experiment.set_name(f"{args.task}_{suffix}")
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -117,10 +146,10 @@ def main(args: argparse.Namespace):
         print("lr:", lr_scheduler.get_last_lr()[0])
         # train for one epoch
         train(train_source_iter, train_target_iter, classifier, domain_adv, optimizer,
-              lr_scheduler, epoch, args)
+              lr_scheduler, epoch, args, experiment)
 
         # evaluate on validation set
-        acc1 = utils.validate(val_loader, classifier, args, device)
+        acc1 = utils.validate(val_loader, classifier, args, device, experiment, epoch)
 
         # remember best acc@1 and save checkpoint
         torch.save(classifier.state_dict(), logger.get_checkpoint_path('latest'))
@@ -140,7 +169,7 @@ def main(args: argparse.Namespace):
 
 def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverDataIterator,
           model: ImageClassifier, domain_adv: DomainAdversarialLoss, optimizer: SGD,
-          lr_scheduler: LambdaLR, epoch: int, args: argparse.Namespace):
+          lr_scheduler: LambdaLR, epoch: int, args: argparse.Namespace, experiment):
     batch_time = AverageMeter('Time', ':5.2f')
     data_time = AverageMeter('Data', ':5.2f')
     losses = AverageMeter('Loss', ':6.2f')
@@ -179,6 +208,12 @@ def train(train_source_iter: ForeverDataIterator, train_target_iter: ForeverData
         loss = cls_loss + transfer_loss * args.trade_off
 
         cls_acc = accuracy(y_s, labels_s)[0]
+
+        experiment.log_metric('train_loss', loss.item(), epoch=epoch)
+        experiment.log_metric('src_cls_loss', cls_loss.item(), epoch=epoch)
+        experiment.log_metric('domain_loss', transfer_loss.item(), epoch=epoch)
+        experiment.log_metric('domain_acc', domain_acc, epoch=epoch)
+        experiment.log_metric('src_cls_acc', cls_acc, epoch=epoch)
 
         losses.update(loss.item(), x_s.size(0))
         cls_accs.update(cls_acc.item(), x_s.size(0))
