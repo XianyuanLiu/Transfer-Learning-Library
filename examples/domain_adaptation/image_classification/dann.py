@@ -61,7 +61,6 @@ def main(args: argparse.Namespace):
         "weight_decay": args.weight_decay,
         "num_epochs": args.epochs,
         "seed": args.seed,
-        "phase": args.train,
     }
     experiment.log_parameters(hyper_params)
     experiment.set_name(f"{args.task}_{suffix}")
